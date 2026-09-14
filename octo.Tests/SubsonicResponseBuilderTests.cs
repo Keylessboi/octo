@@ -407,4 +407,39 @@ public class SubsonicResponseBuilderTests
             Assert.Equal(1411, row["bitRate"]);
         }
     }
+    // ---- Issue #35: the album DETAIL shape was missing `created` -----------------
+    // Strict OpenSubsonic clients validate before playing: Music Assistant rejected every
+    // external album with "Field created of type str is missing in AlbumID3WithSongs".
+    // The album ROW shape (BuildAlbumFields) always sent it, so the two disagreed and only
+    // the detail call broke.
+
+    [Fact]
+    public void CreateAlbumResponse_JsonFormat_CarriesCreated()
+    {
+        var album = new Album { Id = "album123", Title = "Test Album", Artist = "Test Artist" };
+
+        var result = _builder.CreateAlbumResponse("json", album);
+
+        var json = JsonSerializer.Serialize(Assert.IsType<JsonResult>(result).Value);
+        var albumData = JsonDocument.Parse(json).RootElement
+            .GetProperty("subsonic-response").GetProperty("album");
+
+        Assert.True(albumData.TryGetProperty("created", out var created));
+        Assert.True(DateTime.TryParse(created.GetString(), out _));
+    }
+
+    [Fact]
+    public void CreateAlbumResponse_XmlFormat_CarriesCreated()
+    {
+        var album = new Album { Id = "album123", Title = "Test Album", Artist = "Test Artist" };
+
+        var result = _builder.CreateAlbumResponse("xml", album);
+
+        var xml = Assert.IsType<ContentResult>(result).Content!;
+        var albumElement = XDocument.Parse(xml).Descendants()
+            .First(e => e.Name.LocalName == "album");
+
+        Assert.NotNull(albumElement.Attribute("created"));
+        Assert.True(DateTime.TryParse(albumElement.Attribute("created")!.Value, out _));
+    }
 }

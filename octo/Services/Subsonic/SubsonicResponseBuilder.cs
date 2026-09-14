@@ -192,6 +192,13 @@ public class SubsonicResponseBuilder
             ["duration"] = album.Songs.Sum(s => s.Duration ?? 0),
             ["genre"] = album.Genre ?? "",
             ["isCompilation"] = false,
+            // Required by the OpenSubsonic schema, and strict clients validate the payload
+            // before they play anything: Music Assistant rejected every external album with
+            // "Field created of type str is missing in AlbumID3WithSongs" (issue #35).
+            // Lenient clients never noticed, so this looked like a Music Assistant problem.
+            // BuildAlbumFields, which renders the album ROWS in a search, has always sent
+            // it; this builds the album DETAIL and did not, so the two disagreed.
+            ["created"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
         };
         if (album.ArtistId is not null) fields["artistId"] = album.ArtistId;
         if (album.Year is int albumYear) fields["year"] = albumYear;
