@@ -119,7 +119,9 @@ builder.Services.AddHttpClient(YouTubeResolver.StreamClientName, c =>
 {
     c.Timeout = Timeout.InfiniteTimeSpan;
 });
-builder.Services.AddSingleton<ExternalIdRegistry>();
+builder.Services.AddSingleton(sp => new ExternalIdRegistry(
+    System.IO.Path.Combine(System.IO.Path.GetDirectoryName(SettingsFilePath)!, "external-ids.json"),
+    sp.GetRequiredService<ILogger<ExternalIdRegistry>>()));
 builder.Services.AddSingleton<RadioQueueStore>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.NavidromeIdentityService>();
 builder.Services.AddSingleton<Octo.Services.Subsonic.SubsonicDiscoveryService>();

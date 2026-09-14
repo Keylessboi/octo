@@ -103,4 +103,62 @@ public class ExternalIdRegistryTests
     {
         Assert.Null(_registry.Lookup("nonexistent"));
     }
+    // ---- Persistence --------------------------------------------------------
+    // The registry is the only thing that knows an id is ours, so losing it on restart
+    // made every id a client still held look local. Those were relayed to Navidrome,
+    // which answers error 70 "data not found" for media it does not have, and the client
+    // showed that on every play and every poll.
+
+    [Fact]
+    public void Register_SurvivesARestart()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"octo-ids-{Guid.NewGuid():N}.json");
+        try
+        {
+            string id;
+            using (var first = new ExternalIdRegistry(path))
+            {
+                id = first.Register(new SoulseekRouting
+                {
+                    Artist = "Radiohead", Title = "Reckoner", Duration = 290,
+                });
+            }
+
+            using var reopened = new ExternalIdRegistry(path);
+            var routing = reopened.Lookup(id);
+
+            Assert.NotNull(routing);
+            Assert.Equal("Radiohead", routing!.Artist);
+            Assert.Equal("Reckoner", routing.Title);
+            Assert.Equal(290, routing.Duration);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void Register_WithNoPath_KeepsWorkingInMemory()
+    {
+        // The parameterless form is still a valid registry, just not a durable one.
+        using var registry = new ExternalIdRegistry();
+        var id = registry.Register(new SoulseekRouting { Artist = "A", Title = "B" });
+        Assert.NotNull(registry.Lookup(id));
+    }
+
+    [Fact]
+    public void Load_UnreadableFile_StartsEmptyRatherThanThrowing()
+    {
+        // A registry that will not parse is a cold start, not a failure to boot.
+        var path = Path.Combine(Path.GetTempPath(), $"octo-ids-{Guid.NewGuid():N}.json");
+        File.WriteAllText(path, "{ this is not the file you are looking for");
+        try
+        {
+            using var registry = new ExternalIdRegistry(path);
+            Assert.Null(registry.Lookup("anything"));
+
+            // ...and it must still be usable afterwards.
+            var id = registry.Register(new SoulseekRouting { Artist = "A", Title = "B" });
+            Assert.NotNull(registry.Lookup(id));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
 }

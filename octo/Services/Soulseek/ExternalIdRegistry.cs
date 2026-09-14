@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace Octo.Services.Soulseek;
 
@@ -14,7 +15,7 @@ namespace Octo.Services.Soulseek;
 /// same id; this keeps caches/de-duplication on the client side stable across calls.
 /// The dictionary is LRU-bounded so a single user can't grow it without limit.
 /// </summary>
-public class ExternalIdRegistry
+public class ExternalIdRegistry : IDisposable
 {
     private const int MaxEntries = 10_000;
 
@@ -40,6 +41,7 @@ public class ExternalIdRegistry
         _byId[id] = routing;
         Touch(id);
         Trim();
+        Interlocked.Exchange(ref _dirty, 1);
         return id;
     }
 
@@ -110,5 +112,97 @@ public class ExternalIdRegistry
                 _byId.TryRemove(oldest, out _);
             }
         }
+    }
+    // ---- Persistence ---------------------------------------------------------
+    //
+    // The registry is the ONLY thing that knows an id is ours: ParseExternalId decides
+    // "external" by looking it up here. So when this was memory-only, every restart made
+    // every id a client still held look local, and those ids were relayed to Navidrome,
+    // which has no such media and answers error 70 "data not found". Clients surface that
+    // per play and per poll, which reads as a stream of errors from a working server.
+    //
+    // Ids are deterministic, so re-running the search that minted one brings it back. That
+    // is a recovery, not a design: a queue built before a restart has no reason to search
+    // again. Writing the map down is what makes an id outlive the process.
+
+    private readonly string? _path;
+    private readonly ILogger<ExternalIdRegistry>? _logger;
+    private readonly Timer? _flushTimer;
+    private int _dirty;
+
+    /// <summary>A search registers well over a hundred routings, so flushing per write
+    /// would turn one search into a hundred file writes. Coalesce instead: the window is
+    /// short next to the restarts this exists to survive.</summary>
+    private static readonly TimeSpan FlushInterval = TimeSpan.FromSeconds(10);
+
+    private sealed record Persisted(string Id, SoulseekRouting Routing);
+
+    public ExternalIdRegistry(string? path = null, ILogger<ExternalIdRegistry>? logger = null)
+    {
+        _path = string.IsNullOrWhiteSpace(path) ? null : path;
+        _logger = logger;
+        if (_path is null) return;
+
+        Load();
+        _flushTimer = new Timer(_ => Flush(), null, FlushInterval, FlushInterval);
+    }
+
+    private void Load()
+    {
+        try
+        {
+            if (!File.Exists(_path)) return;
+            var entries = JsonSerializer.Deserialize<List<Persisted>>(File.ReadAllText(_path!));
+            if (entries is null) return;
+
+            // Stored most-recently-used first, so replaying in order rebuilds the same
+            // eviction order rather than an arbitrary one.
+            foreach (var e in entries)
+            {
+                if (string.IsNullOrEmpty(e.Id) || e.Routing is null) continue;
+                _byId[e.Id] = e.Routing;
+                lock (_lruLock) _lru.AddLast(e.Id);
+            }
+            Trim();
+            _logger?.LogInformation("external id registry restored {Count} entries", _byId.Count);
+        }
+        catch (Exception ex)
+        {
+            // A registry that will not load is a cold start, not a failure to boot.
+            _logger?.LogWarning("external id registry could not be read: {M}", ex.Message);
+        }
+    }
+
+    private void Flush()
+    {
+        if (_path is null) return;
+        if (Interlocked.Exchange(ref _dirty, 0) == 0) return;
+        try
+        {
+            List<string> order;
+            lock (_lruLock) order = _lru.ToList();
+
+            var entries = new List<Persisted>(order.Count);
+            foreach (var id in order)
+                if (_byId.TryGetValue(id, out var routing)) entries.Add(new Persisted(id, routing));
+
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+            var tmp = _path + ".tmp";
+            File.WriteAllText(tmp, JsonSerializer.Serialize(entries));
+            File.Move(tmp, _path, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: losing a flush costs the ids minted since the last one, which
+            // is the behaviour we already had. It must never take a request down.
+            Interlocked.Exchange(ref _dirty, 1);
+            _logger?.LogWarning("external id registry could not be written: {M}", ex.Message);
+        }
+    }
+
+    public void Dispose()
+    {
+        _flushTimer?.Dispose();
+        Flush();
     }
 }
