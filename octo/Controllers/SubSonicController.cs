@@ -852,7 +852,7 @@ public class SubsonicController : ControllerBase
         // fold external artists in and dedupe them against local ones, but nothing ever
         // gave it any, so the artist column of every search showed only what the library
         // already had. Keyless like albums, so it works without a Last.fm key.
-        var artistTask = requestedArtists > 0 && !isTypeAheadProbe
+        var artistTask = requestedArtists > 0 && !isTypeAheadProbe && _subsonicSettings.EnableSearchDiscovery
             ? _metadataService.SearchArtistsAsync(cleanQuery, Math.Min(requestedArtists, 20))
             : Task.FromResult(new List<Artist>());
 
