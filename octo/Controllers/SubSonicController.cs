@@ -845,8 +845,8 @@ public class SubsonicController : ControllerBase
         // serial latency. It needs no Last.fm key (Deezer's catalog is keyless), so albums
         // still appear for a user who has not set one up.
         var albumTask = requestedAlbums > 0 && !isTypeAheadProbe && _subsonicSettings.EnableSearchDiscovery
-            ? _metadataService.SearchAlbumsAsync(cleanQuery, Math.Min(requestedAlbums, 20))
-            : Task.FromResult(new List<Album>());
+            ? _externalSearch.GetAlbumsAsync(cleanQuery, Math.Min(requestedAlbums, 20))
+            : Task.FromResult<IReadOnlyList<Album>>(new List<Album>());
 
         // Artists the same way, and for the same reason: the merge has always known how to
         // fold external artists in and dedupe them against local ones, but nothing ever
@@ -911,7 +911,7 @@ public class SubsonicController : ControllerBase
 
         // Degrade to no albums rather than failing the whole search if Deezer is slow,
         // throttled or unreachable.
-        List<Album> externalAlbums;
+        IReadOnlyList<Album> externalAlbums;
         try { externalAlbums = await albumTask; }
         catch (Exception ex)
         {
@@ -930,7 +930,7 @@ public class SubsonicController : ControllerBase
         var externalResult = new SearchResult
         {
             Songs = externalSongs,
-            Albums = externalAlbums,
+            Albums = externalAlbums.ToList(),
             Artists = externalArtists,
         };
 
