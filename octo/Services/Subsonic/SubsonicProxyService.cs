@@ -79,10 +79,18 @@ public class SubsonicProxyService
         "Accept", "User-Agent", "If-None-Match", "If-Modified-Since", "Range",
     };
     // Response headers passed back to the client (notably the rotated ND token).
+    //
+    // This is an allowlist, so anything missing from it is silently dropped, and
+    // X-Total-Count was. Navidrome's native list endpoints report their length only in
+    // that header, and Navidrome-mode clients size their virtualised lists from it: with
+    // no header, Feishin's Albums, Artists and Tracks pages have nothing to size against
+    // and render empty, while Home and Search, which do not paginate, look perfectly fine
+    // (issue #34). The body was always correct, which is why it read as a client bug.
     private static readonly string[] ForwardResponseHeaders =
     {
         "X-Nd-Authorization", "ETag", "Last-Modified", "Cache-Control",
         "Content-Range", "Accept-Ranges", "Vary",
+        "X-Total-Count", "Access-Control-Expose-Headers",
     };
 
     public async Task<RawRelayResult> RelayRawAsync(
