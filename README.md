@@ -82,6 +82,7 @@ The installer asks for your Navidrome URL (and, optionally, Last.fm and Soulseek
 
 - Point your Subsonic apps at `http://<your-host>:5274` — **not** Navidrome's own address.
 - Open the admin dashboard at **`http://<your-host>:5274/admin`** to manage every setting from the browser — no editing config files by hand.
+  It is unauthenticated, so keep Octo on a trusted network. See [Admin dashboard](#admin-dashboard).
 - If a client reports the server is unreachable, that is Octo telling you setup is not finished: its ping response spells out exactly what to fix (usually the Navidrome URL).
 
 ## Compatible apps
@@ -139,6 +140,20 @@ Prebuilt multi-arch images are also published to `ghcr.io/winters27/octo`, tagge
 `http://<your-host>:5274/admin`
 
 Every setting has a form, every backing service has a live status indicator, and the **Raw Config** tab lets you edit the whole effective configuration as a JSON file if you'd rather work that way. Changes hot-reload — no rebuild, no restart for most settings.
+
+> [!WARNING]
+> **The admin dashboard has no authentication, so run Octo on a trusted network only.**
+>
+> Anyone who can reach port 5274 can read and change every setting, including your
+> Last.fm API key, your Navidrome admin login, and your Soulseek and slskd passwords.
+> Nothing on that page asks who you are.
+>
+> Do not port-forward 5274 or put it on a public hostname. If you need Octo from
+> outside your network, reach it over a VPN such as [Tailscale](https://tailscale.com/)
+> or [WireGuard](https://www.wireguard.com/), or put it behind a reverse proxy that
+> requires authentication and blocks `/admin` outright. A proxy that only fronts the
+> Subsonic API and refuses `/admin` and `/api` is enough for music clients, since those
+> only need `/rest`.
 
 ## Notifications
 
