@@ -141,6 +141,22 @@ public class DeezerMetadataService : IDisposable
         return c;
     }
 
+    private static string TrackKey(string? artist, string? title) =>
+        $"t|{artist}|{title}".ToLowerInvariant();
+
+    /// <summary>
+    /// What is already known about a track, or null when nothing is. Never makes a
+    /// request, so a caller on a latency budget can complete the rows it knows without
+    /// paying for the ones it does not. Shares <see cref="TrackKey"/> with
+    /// <see cref="EnrichTrackAsync"/>, because a lookup keyed differently from the write
+    /// would silently never hit.
+    /// </summary>
+    public TrackMeta? CachedTrack(string? artist, string? title)
+    {
+        if (string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
+        return TryGetCached<TrackMeta?>(TrackKey(artist, title), out var cached) ? cached : null;
+    }
+
     /// <summary>Resolve "artist + title" to the real album + artist (name, art, year).
     /// Pass includeYear=false to skip the extra album-detail call (bulk enrichment
     /// wants duration + album fast; the year is fetched lazily by the album view).</summary>
@@ -148,7 +164,7 @@ public class DeezerMetadataService : IDisposable
         bool background = false, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(artist) && string.IsNullOrWhiteSpace(title)) return null;
-        var key = $"t|{artist}|{title}".ToLowerInvariant();
+        var key = TrackKey(artist, title);
         if (TryGetCached<TrackMeta?>(key, out var cached)) return cached;
 
         TrackMeta? meta = null;

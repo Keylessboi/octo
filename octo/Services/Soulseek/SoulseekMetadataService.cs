@@ -90,19 +90,25 @@ public class SoulseekMetadataService : IMusicMetadataService
     }
 
     // Deezer's real ceiling is ~50 requests per 5 seconds, and this runs on search3's
-    // critical path, so the AWAITED set has to stay small. 60 rows at 8-way concurrency
-    // was roughly 65 requests/second on its own, which is what exhausted the quota and
-    // poisoned the metadata caches (issue #8).
+    // critical path, so the set that blocks a response stays small. 60 rows at 8-way
+    // concurrency was roughly 65 requests/second on its own, which is what exhausted the
+    // quota and poisoned the metadata caches (issue #8). DeezerRateLimiter now holds that
+    // budget centrally, so this figure is about how long a user waits, not about safety.
     //
     // 12 is the same "first page" figure PrewarmYouTubeIdsAsync already uses. It must
     // stay above TopDurationResolveLimit, or the rows that get a YouTube length hint
     // would be reading a duration nobody resolved.
     private const int SearchEnrichLimit = 12;
 
-    // Rows past the first page are warmed off the critical path, so per-row detail
-    // calls (getSong, the native song endpoint) hit a populated cache instead of
-    // paying for the lookup while a user waits.
+    // The whole slice a search can return. Everything between the first page and this is
+    // filled from cache and warmed for next time, because a row with no enrichment falls
+    // back to a flat 180 and a page of identical 3:00 rows is worse than a page of
+    // approximate ones. Deezer's length is the approximation - it is not always the
+    // recording that plays - and the exact value is resolved when a row is opened or
+    // played, where getSong and the native detail endpoint both call
+    // ResolveTopDurationsAsync.
     private const int BackgroundEnrichLimit = 60;
+
 
     public async Task EnrichExternalSongsAsync(List<Song> songs, CancellationToken ct = default)
     {
@@ -133,28 +139,54 @@ public class SoulseekMetadataService : IMusicMetadataService
         });
         await Task.WhenAll(tasks);
 
-        WarmRemainingInBackground(external.Skip(SearchEnrichLimit).Take(BackgroundEnrichLimit - SearchEnrichLimit).ToList());
+        EnrichRemaining(external.Skip(SearchEnrichLimit).Take(BackgroundEnrichLimit - SearchEnrichLimit).ToList());
     }
 
     /// <summary>
-    /// Populate the Deezer cache for rows below the first page.
+    /// Complete the rows below the first page from what is already known, then fetch the
+    /// rest off the critical path so the next search for this query can complete them too.
     ///
-    /// These deliberately do NOT write back to the Song or its routing. Those objects
-    /// are being serialised into the response as this runs, and Song.Duration is an
-    /// int? whose non-atomic write can be read back as 0 — which is precisely the value
-    /// that stops a client drawing a scrub bar. Writing Album mid-loop would also split
-    /// one album across two synthetic ids. Cache only.
+    /// Reading the cache is free, so it happens inline and the rows it answers are real in
+    /// THIS response. The fetch is not free, and awaiting it was worse than the bug it
+    /// fixed: a 4s budget added 4s to every search to fill about ten rows, and a page only
+    /// converged after five searches. Off the critical path the same work costs nothing and
+    /// the second search answers all of it from cache.
+    ///
+    /// The warm still writes nothing back to a Song. Those objects are being serialised as
+    /// it runs, and Song.Duration is an int? whose non-atomic write can be read back as 0,
+    /// which is exactly the value that stops a client drawing a scrub bar.
     /// </summary>
-    private void WarmRemainingInBackground(List<Song> songs)
+    private void EnrichRemaining(List<Song> songs)
     {
         if (songs.Count == 0) return;
 
+        var cold = new List<Song>();
+        foreach (var song in songs)
+        {
+            var meta = _deezer.CachedTrack(song.Artist, song.Title);
+            if (meta is null) { cold.Add(song); continue; }
+
+            if (meta.Duration is int d && d > 0) song.Duration = d;
+            if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) song.Album = meta.AlbumTitle;
+
+            // Reflect onto the shared routing so getSong stays consistent.
+            var routing = _idRegistry.Lookup(song.Id);
+            if (routing != null)
+            {
+                if (meta.Duration is int rd && rd > 0) routing.Duration = rd;
+                if (!string.IsNullOrWhiteSpace(meta.AlbumTitle)) routing.Album = meta.AlbumTitle;
+            }
+        }
+
+        if (cold.Count == 0) return;
+
         _ = Task.Run(async () =>
         {
-            foreach (var song in songs)
+            foreach (var song in cold)
             {
                 // Sequential on purpose: this has no deadline, and fanning out here is
-                // what would eat the quota the awaited set needs.
+                // what would eat the quota the awaited set needs. The year is skipped
+                // because it costs a second request per album and no search row shows it.
                 try { await _deezer.EnrichTrackAsync(song.Artist, song.Title, includeYear: false, background: true); }
                 catch { /* best-effort */ }
             }
