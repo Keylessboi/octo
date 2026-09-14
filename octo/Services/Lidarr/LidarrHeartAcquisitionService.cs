@@ -29,6 +29,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
     private readonly IMusicMetadataService _metadata;
     private readonly DeezerMetadataService _deezer;
     private readonly IOptionsMonitor<LidarrSettings> _settings;
+    private readonly IOptionsMonitor<SubsonicSettings> _subsonicSettings;
     private readonly IConfiguration _configuration;
     private readonly NavidromeIdentityService _navIdentity;
     private readonly ILocalLibraryService _library;
@@ -43,6 +44,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         IMusicMetadataService metadata,
         DeezerMetadataService deezer,
         IOptionsMonitor<LidarrSettings> settings,
+        IOptionsMonitor<SubsonicSettings> subsonicSettings,
         IConfiguration configuration,
         NavidromeIdentityService navIdentity,
         ILocalLibraryService library,
@@ -54,6 +56,7 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         _metadata = metadata;
         _deezer = deezer;
         _settings = settings;
+        _subsonicSettings = subsonicSettings;
         _configuration = configuration;
         _navIdentity = navIdentity;
         _library = library;
@@ -320,13 +323,23 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
     /// Re-home it into the same layout PathHelper.BuildTrackPath gives direct Soulseek
     /// downloads, so Navidrome never sees Lidarr-sourced tracks organized differently.
     /// </summary>
-    private static string NormalizeImportedLayout(string importedPath, Album album, LidarrImportedTrack track, string octoRoot)
+    private string NormalizeImportedLayout(string importedPath, Album album, LidarrImportedTrack track, string octoRoot)
     {
         try
         {
             var ext = Path.GetExtension(importedPath);
             var title = string.IsNullOrWhiteSpace(track.Title) ? album.Title : track.Title;
-            var canonicalPath = PathHelper.BuildTrackPath(octoRoot, album.Artist, album.Title, title, track.TrackNumber, ext);
+
+            // Follow the SAME setting the Soulseek path follows. Building the Artist/Album
+            // layout unconditionally would put Lidarr imports in folders while a Flat
+            // library keeps everything in one directory, which is the inconsistency this
+            // is here to remove, and Flat is the default.
+            var canonicalPath = _subsonicSettings.CurrentValue.FolderStructure switch
+            {
+                FolderStructure.Flat => Path.Combine(octoRoot,
+                    $"{PathHelper.SanitizeFileName(album.Artist)} - {PathHelper.SanitizeFileName(title)}{ext}"),
+                _ => PathHelper.BuildTrackPath(octoRoot, album.Artist, album.Title, title, track.TrackNumber, ext),
+            };
             if (string.Equals(Path.GetFullPath(canonicalPath), Path.GetFullPath(importedPath), StringComparison.OrdinalIgnoreCase))
                 return importedPath;
 
