@@ -3,6 +3,7 @@ using Microsoft.Extensions.Options;
 using Octo.Models.Domain;
 using Octo.Models.Download;
 using Octo.Models.Settings;
+using Octo.Services.Common;
 using Octo.Services.Local;
 using Octo.Services.Metadata;
 using Octo.Services.Notifications;
@@ -176,6 +177,8 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         var expected = 0;
         var visibleToOcto = 0;
 
+        var octoRoot = _navIdentity.EffectiveDownloadPath(_configuration["Library:DownloadPath"] ?? "/music");
+
         while (DateTime.UtcNow < deadline)
         {
             var state = await _client.GetAlbumImportStateAsync(albumId);
@@ -189,9 +192,9 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
                 .ToList();
             foreach (var track in visible)
             {
-                var localPath = TranslateImportedPath(track.Path!, settings.RootFolderPath,
-                    _navIdentity.EffectiveDownloadPath(_configuration["Library:DownloadPath"] ?? "/music"));
-                if (!File.Exists(localPath)) continue;
+                var importedPath = TranslateImportedPath(track.Path!, settings.RootFolderPath, octoRoot);
+                if (!File.Exists(importedPath)) continue;
+                var localPath = NormalizeImportedLayout(importedPath, album, track, octoRoot);
                 visibleToOcto++;
                 if (!_recordedPaths.TryAdd(localPath, 0)) continue;
                 try
@@ -308,6 +311,42 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
         if (Path.GetRelativePath(targetRoot, target).StartsWith("..", StringComparison.Ordinal))
             throw new InvalidOperationException("Translated Lidarr path escaped Octo's library root.");
         return target;
+    }
+
+    /// <summary>
+    /// Lidarr does not always rename an import into an Artist/Album layout: a release with
+    /// thin MusicBrainz metadata can land under its raw staging folder name (e.g.
+    /// "HELLHOUND {mbid:...} {Album}") with the peer's original filename still attached.
+    /// Re-home it into the same layout PathHelper.BuildTrackPath gives direct Soulseek
+    /// downloads, so Navidrome never sees Lidarr-sourced tracks organized differently.
+    /// </summary>
+    private static string NormalizeImportedLayout(string importedPath, Album album, LidarrImportedTrack track, string octoRoot)
+    {
+        try
+        {
+            var ext = Path.GetExtension(importedPath);
+            var title = string.IsNullOrWhiteSpace(track.Title) ? album.Title : track.Title;
+            var canonicalPath = PathHelper.BuildTrackPath(octoRoot, album.Artist, album.Title, title, track.TrackNumber, ext);
+            if (string.Equals(Path.GetFullPath(canonicalPath), Path.GetFullPath(importedPath), StringComparison.OrdinalIgnoreCase))
+                return importedPath;
+
+            var targetDir = Path.GetDirectoryName(canonicalPath);
+            if (!string.IsNullOrEmpty(targetDir)) Directory.CreateDirectory(targetDir);
+            canonicalPath = PathHelper.ResolveUniquePath(canonicalPath);
+            File.Move(importedPath, canonicalPath);
+
+            var oldDir = Path.GetDirectoryName(importedPath);
+            if (!string.IsNullOrEmpty(oldDir) && Directory.Exists(oldDir)
+                && !Directory.EnumerateFileSystemEntries(oldDir).Any())
+                Directory.Delete(oldDir);
+
+            return canonicalPath;
+        }
+        catch
+        {
+            // Best effort: keep the file registered where Lidarr put it rather than losing it.
+            return importedPath;
+        }
     }
 
     private async Task<bool> TryAcquireAsync(
