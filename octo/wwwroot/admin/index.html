@@ -307,12 +307,13 @@
             <div class="set-row">
               <div class="set-info">
                 <div class="set-info-t">Folder structure</div>
-                <div class="set-info-d">Flat is <code>Artist - Title.flac</code>; Organized nests into <code>Artist/Title/</code>.</div>
+                <div class="set-info-d">Flat is <code>Artist - Title.flac</code>; By artist is <code>Artist/Title.flac</code>; Organized is <code>Artist/Album/01 - Title.flac</code>.</div>
               </div>
               <div class="set-ctrl">
                 <div class="seg" data-seg-for="f-folder-structure"><span class="seg-thumb"></span></div>
                 <select id="f-folder-structure" name="Subsonic.FolderStructure" class="seg-src" hidden>
                   <option value="Flat">Flat</option>
+                  <option value="ByArtist">By artist</option>
                   <option value="Organized">Organized</option>
                 </select>
               </div>

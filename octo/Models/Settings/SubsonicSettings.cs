@@ -78,7 +78,15 @@ public enum FolderStructure
     /// Flat file structure: Artist - Title.flac (all files in root)
     /// Better for simple libraries without nested folders
     /// </summary>
-    Flat
+    Flat,
+
+    /// <summary>
+    /// One folder per artist, no album folder: Artist/Title.flac
+    /// For a library built a track at a time, where Organized makes a folder per
+    /// single and Flat makes one directory of thousands of files. The album is
+    /// still in the tags, so a server that reads tags shows it either way.
+    /// </summary>
+    ByArtist
 }
 
 /// <summary>

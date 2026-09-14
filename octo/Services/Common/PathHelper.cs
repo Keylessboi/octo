@@ -1,3 +1,4 @@
+using Octo.Models.Settings;
 using IOFile = System.IO.File;
 
 namespace Octo.Services.Common;
@@ -8,6 +9,47 @@ namespace Octo.Services.Common;
 /// </summary>
 public static class PathHelper
 {
+    /// <summary>
+    /// Where a track goes for a given <see cref="FolderStructure"/>.
+    ///
+    /// Every download path routes through here so one setting decides the layout for all
+    /// of them. It used to be decided by a separate switch per source - the Soulseek move,
+    /// the YouTube download and the Lidarr import - and two of those carried a silent
+    /// default branch, so adding a layout would have left them quietly filing into the old
+    /// one while only the third obeyed the setting.
+    ///
+    /// The switch is exhaustive on purpose: a new layout should fail to compile here rather
+    /// than resolve to whatever the default arm happened to be.
+    /// </summary>
+    public static string BuildLayoutPath(FolderStructure structure, string downloadPath,
+        string artist, string album, string title, int? trackNumber, string extension)
+    {
+        var safeArtist = SanitizeFolderName(artist);
+        var safeTitle = SanitizeFileName(title);
+
+        // A track with no album falls back to its own title as the folder. Before albums
+        // existed the Organized layout always used the TRACK title, scattering an album's
+        // tracks into a folder each; the routing carries the album now, and this keeps that
+        // old shape only for a track that genuinely has none. The rule lives here so every
+        // caller gets it instead of each one remembering to apply it.
+        var effectiveAlbum = string.IsNullOrWhiteSpace(album) ? title : album;
+
+        return structure switch
+        {
+            FolderStructure.Flat =>
+                Path.Combine(downloadPath, $"{safeArtist} - {safeTitle}{extension}"),
+
+            // No album folder: the album stays in the tags, which is what the server reads.
+            FolderStructure.ByArtist =>
+                Path.Combine(downloadPath, safeArtist, $"{safeTitle}{extension}"),
+
+            FolderStructure.Organized =>
+                BuildTrackPath(downloadPath, artist, effectiveAlbum, title, trackNumber, extension),
+
+            _ => throw new ArgumentOutOfRangeException(nameof(structure), structure,
+                "Unhandled folder layout."),
+        };
+    }
     /// <summary>
     /// Gets the cache directory path for temporary file storage.
     /// Uses system temp directory combined with octo-cache subfolder.

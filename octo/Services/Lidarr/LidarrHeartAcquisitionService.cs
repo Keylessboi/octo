@@ -334,12 +334,9 @@ public sealed class LidarrHeartAcquisitionService : ILidarrHeartAcquisitionServi
             // layout unconditionally would put Lidarr imports in folders while a Flat
             // library keeps everything in one directory, which is the inconsistency this
             // is here to remove, and Flat is the default.
-            var canonicalPath = _subsonicSettings.CurrentValue.FolderStructure switch
-            {
-                FolderStructure.Flat => Path.Combine(octoRoot,
-                    $"{PathHelper.SanitizeFileName(album.Artist)} - {PathHelper.SanitizeFileName(title)}{ext}"),
-                _ => PathHelper.BuildTrackPath(octoRoot, album.Artist, album.Title, title, track.TrackNumber, ext),
-            };
+            var canonicalPath = PathHelper.BuildLayoutPath(
+                _subsonicSettings.CurrentValue.FolderStructure, octoRoot,
+                album.Artist, album.Title, title, track.TrackNumber, ext);
             if (string.Equals(Path.GetFullPath(canonicalPath), Path.GetFullPath(importedPath), StringComparison.OrdinalIgnoreCase))
                 return importedPath;
 

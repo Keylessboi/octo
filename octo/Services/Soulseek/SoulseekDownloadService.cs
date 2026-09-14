@@ -231,12 +231,10 @@ public class SoulseekDownloadService : BaseDownloadService
         // so a Last.fm title like "Massive Attack - Teardrop" doesn't produce
         // "Massive Attack - Massive Attack - Teardrop.mp3".
         var ytTitle  = SanitizeForFs(NormalizeTitle(routing.Title ?? "", routing.Artist ?? "")) ?? "Unknown Title";
-        var destWithoutExt = SubsonicSettings.FolderStructure switch
-        {
-            // Extension is left empty: the shim appends .mp3 itself.
-            Models.Settings.FolderStructure.Organized => BuildOrganizedPath(routing, ytArtist, ytTitle, ""),
-            _ => Path.Combine(DownloadPath, $"{ytArtist} - {ytTitle}"),
-        };
+        // Extension is left empty: the shim appends .mp3 itself.
+        var destWithoutExt = PathHelper.BuildLayoutPath(
+            SubsonicSettings.FolderStructure, DownloadPath, ytArtist,
+            routing.Album ?? "", ytTitle, routing.Track, "");
 
         var path = await _youtube.DownloadAsync(videoId, destWithoutExt, routing.Artist, routing.Title, cancellationToken);
         if (string.IsNullOrEmpty(path) || !IOFile.Exists(path))
@@ -456,14 +454,9 @@ public class SoulseekDownloadService : BaseDownloadService
             var title  = SanitizeForFs(NormalizeTitle(routing.Title ?? "", routing.Artist ?? "")) ?? "Unknown Title";
             var ext    = Path.GetExtension(currentPath);
 
-            string targetPath = SubsonicSettings.FolderStructure switch
-            {
-                Models.Settings.FolderStructure.Flat
-                    => Path.Combine(DownloadPath, $"{artist} - {title}{ext}"),
-                Models.Settings.FolderStructure.Organized
-                    => BuildOrganizedPath(routing, artist, title, ext),
-                _ => currentPath,
-            };
+            var targetPath = PathHelper.BuildLayoutPath(
+                SubsonicSettings.FolderStructure, DownloadPath, artist,
+                routing.Album ?? "", title, routing.Track, ext);
 
             if (string.Equals(Path.GetFullPath(targetPath), Path.GetFullPath(currentPath), StringComparison.OrdinalIgnoreCase))
                 return currentPath;
@@ -493,24 +486,6 @@ public class SoulseekDownloadService : BaseDownloadService
                 SubsonicSettings.FolderStructure, currentPath);
             return null;
         }
-    }
-
-    /// <summary>
-    /// Organized layout: <c>{DownloadPath}/{Artist}/{Album}/{NN - Title}{ext}</c>.
-    ///
-    /// The album folder is what makes a hearted album land as one album on disk. Before
-    /// albums existed Octo only fetched standalone singles, so this used the TRACK title
-    /// as the folder and scattered an album's tracks into a folder each. The routing now
-    /// carries the album, so use it, falling back to the title for a track that genuinely
-    /// has no album (which reproduces the old shape).
-    ///
-    /// Existing files are never moved: this only names the download currently in flight,
-    /// so an upgrade leaves previously-downloaded files exactly where they are.
-    /// </summary>
-    private string BuildOrganizedPath(SoulseekRouting routing, string artist, string title, string ext)
-    {
-        var album = string.IsNullOrWhiteSpace(routing.Album) ? title : routing.Album!;
-        return PathHelper.BuildTrackPath(DownloadPath, artist, album, title, routing.Track, ext);
     }
 
     private static string? SanitizeForFs(string? s)
