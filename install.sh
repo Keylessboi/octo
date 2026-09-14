@@ -372,7 +372,7 @@ for i in $(seq 1 60); do
   if [ "$i" = "60" ]; then
     echo
     red "Octo did not respond within 2 minutes."
-    echo "  Inspect:   docker compose logs octorr"
+    echo "  Inspect:   docker compose logs octo"
     echo "  Restart:   docker compose down && docker compose up -d"
     exit 1
   fi

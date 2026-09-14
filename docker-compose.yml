@@ -1,7 +1,7 @@
 services:
-  octorr:
+  octo:
     build: .
-    container_name: octorr
+    container_name: octo
     restart: unless-stopped
     ports:
       - "5274:8080"

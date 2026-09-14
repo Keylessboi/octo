@@ -24,7 +24,7 @@ public abstract class BaseDownloadService : IDownloadService
     protected readonly IMusicMetadataService MetadataService;
     // IOptionsMonitor, not a captured copy: this is a singleton, so the admin UI's
     // Download source / storage mode / folder structure changes would otherwise not
-    // reach the download path until octorr restarted, while the admin UI itself
+    // reach the download path until Octo restarted, while the admin UI itself
     // (which already reads through IOptionsMonitor) showed them as applied.
     private readonly IOptionsMonitor<SubsonicSettings> _subsonicOptions;
     protected SubsonicSettings SubsonicSettings => _subsonicOptions.CurrentValue;
