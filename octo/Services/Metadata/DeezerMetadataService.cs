@@ -316,6 +316,54 @@ public class DeezerMetadataService : IDisposable
         return meta;
     }
 
+    /// <summary>One artist from a catalog search.</summary>
+    public record ArtistHit(string DeezerId, string Name, string? PictureUrl, int AlbumCount);
+
+    /// <summary>
+    /// Search the catalog for artists. Plain query: the artist endpoint takes a bare name
+    /// and the qualified form is dead everywhere now.
+    /// </summary>
+    public async Task<List<ArtistHit>> SearchArtistsAsync(string query, int limit, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query) || limit <= 0) return new List<ArtistHit>();
+        var key = $"ars|{query}|{limit}".ToLowerInvariant();
+        if (TryGetCached<List<ArtistHit>>(key, out var cached)) return cached!;
+
+        var hits = new List<ArtistHit>();
+        try
+        {
+            var q = Uri.EscapeDataString(query);
+            using var r = await GetJsonAsync($"{Base}/search/artist?q={q}&limit={limit}", ct);
+            // Caching an empty list on a refusal is what would make external artists
+            // silently vanish from search3 for the rest of the process.
+            if (r.Transient) return new List<ArtistHit>();
+            if (r.Doc is not null
+                && r.Doc.RootElement.TryGetProperty("data", out var data)
+                && data.ValueKind == JsonValueKind.Array)
+            {
+                // Materialize everything before the JsonDocument is disposed.
+                foreach (var a in data.EnumerateArray())
+                {
+                    var id = a.TryGetProperty("id", out var aid) && aid.ValueKind == JsonValueKind.Number
+                        ? aid.GetInt64().ToString() : null;
+                    var name = Str(a, "name");
+                    if (id is null || string.IsNullOrWhiteSpace(name)) continue;
+
+                    hits.Add(new ArtistHit(id, name,
+                        Str(a, "picture_xl") ?? Str(a, "picture_medium"),
+                        Int(a, "nb_album") ?? 0));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("deezer artist search '{Q}' failed: {M}", query, ex.Message);
+        }
+
+        Put(key, hits, hits.Count == 0 ? NegativeTtl : PositiveTtl);
+        return hits;
+    }
+
     /// <summary>Search the album catalog. Single-track "albums" are dropped: a plain
     /// artist query returns a lot of them and they crowd out real records.</summary>
     public async Task<List<AlbumHit>> SearchAlbumsAsync(string query, int limit, CancellationToken ct = default)

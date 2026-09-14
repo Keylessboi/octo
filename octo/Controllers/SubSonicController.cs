@@ -847,6 +847,14 @@ public class SubsonicController : ControllerBase
             ? _metadataService.SearchAlbumsAsync(cleanQuery, Math.Min(requestedAlbums, 20))
             : Task.FromResult(new List<Album>());
 
+        // Artists the same way, and for the same reason: the merge has always known how to
+        // fold external artists in and dedupe them against local ones, but nothing ever
+        // gave it any, so the artist column of every search showed only what the library
+        // already had. Keyless like albums, so it works without a Last.fm key.
+        var artistTask = requestedArtists > 0 && !isTypeAheadProbe
+            ? _metadataService.SearchArtistsAsync(cleanQuery, Math.Min(requestedArtists, 20))
+            : Task.FromResult(new List<Artist>());
+
         // One build per query, shared by every caller. Clients routinely fire several
         // search calls for a single typed query, and those calls resolve to the same
         // routing objects, so without this each one would re-run the whole enrichment
@@ -910,11 +918,19 @@ public class SubsonicController : ControllerBase
             externalAlbums = new List<Album>();
         }
 
+        List<Artist> externalArtists;
+        try { externalArtists = await artistTask; }
+        catch (Exception ex)
+        {
+            _logger.LogDebug("external artist search failed for '{Q}': {M}", cleanQuery, ex.Message);
+            externalArtists = new List<Artist>();
+        }
+
         var externalResult = new SearchResult
         {
             Songs = externalSongs,
             Albums = externalAlbums,
-            Artists = new List<Artist>(),
+            Artists = externalArtists,
         };
 
         // Track this response as a "queue" so a later scrobble for any of its

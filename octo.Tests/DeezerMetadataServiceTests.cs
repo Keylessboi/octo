@@ -571,4 +571,51 @@ public class DeezerMetadataServiceTests
         Assert.Null((await svc.EnrichTrackAsync("Radiohead", "Creep"))!.Year);
         Assert.Equal(1993, (await svc.EnrichTrackAsync("Radiohead", "Creep"))!.Year);
     }
+    // ---- External artist search -------------------------------------------------
+    // search3's merge has always known how to fold external artists in, but nothing
+    // populated the list, so the artist column only ever showed the local library.
+
+    [Fact]
+    public async Task SearchArtistsAsync_MapsNameImageAndAlbumCount()
+    {
+        var json = @"{""data"":[
+            {""id"":399,""name"":""Radiohead"",""picture_xl"":""https://cdn/r.jpg"",""nb_album"":24},
+            {""id"":27,""name"":""Daft Punk"",""picture_medium"":""https://cdn/d.jpg"",""nb_album"":11}]}";
+        var svc = BuildService(new() { ["/search/artist"] = json });
+
+        var hits = await svc.SearchArtistsAsync("radiohead", 10);
+
+        Assert.Equal(2, hits.Count);
+        Assert.Equal("399", hits[0].DeezerId);
+        Assert.Equal("Radiohead", hits[0].Name);
+        Assert.Equal("https://cdn/r.jpg", hits[0].PictureUrl);
+        Assert.Equal(24, hits[0].AlbumCount);
+        // Falls back to the medium picture when there is no xl.
+        Assert.Equal("https://cdn/d.jpg", hits[1].PictureUrl);
+    }
+
+    [Fact]
+    public async Task SearchArtistsAsync_Throttled_ReturnsEmptyWithoutCaching()
+    {
+        // Caching an empty list on a refusal is what would make external artists vanish
+        // from search3 for the rest of the process (issue #8's shape).
+        var svc = BuildSequencedService(new()
+        {
+            ("/search/artist", new[] { QuotaEnvelope, @"{""data"":[{""id"":399,""name"":""Radiohead""}]}" }),
+        }, out _);
+
+        Assert.Empty(await svc.SearchArtistsAsync("radiohead", 10));
+        Assert.Single(await svc.SearchArtistsAsync("radiohead", 10));
+    }
+
+    [Fact]
+    public async Task SearchArtistsAsync_SendsPlainQuery()
+    {
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new() { ["/search/artist"] = @"{""data"":[]}" }, capture: sent);
+
+        await svc.SearchArtistsAsync("radiohead", 10);
+
+        Assert.DoesNotContain("artist:", Uri.UnescapeDataString(sent[0].RequestUri!.Query));
+    }
 }

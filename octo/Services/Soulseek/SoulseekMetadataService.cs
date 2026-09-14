@@ -344,8 +344,38 @@ public class SoulseekMetadataService : IMusicMetadataService
         return albums;
     }
 
-    public Task<List<Artist>> SearchArtistsAsync(string query, int limit = 20)
-        => Task.FromResult(new List<Artist>());
+    public async Task<List<Artist>> SearchArtistsAsync(string query, int limit = 20)
+    {
+        if (string.IsNullOrWhiteSpace(query) || limit <= 0) return new List<Artist>();
+
+        var hits = await _deezer.SearchArtistsAsync(query, limit);
+        var artists = new List<Artist>(hits.Count);
+
+        foreach (var hit in hits)
+        {
+            // Same registry id an album row mints for its artist, because the seed is the
+            // artist name alone. So an artist found here and the same artist reached from
+            // an album are one entity, and getArtist answers for both.
+            var id = _idRegistry.Register(new SoulseekRouting
+            {
+                Kind = RoutingKind.Artist,
+                Artist = hit.Name,
+            });
+
+            artists.Add(new Artist
+            {
+                Id = id,
+                Name = hit.Name,
+                ImageUrl = hit.PictureUrl,
+                AlbumCount = hit.AlbumCount,
+                IsLocal = false,
+                ExternalProvider = ProviderName,
+                ExternalId = id,
+            });
+        }
+
+        return artists;
+    }
 
     public async Task<SearchResult> SearchAllAsync(string query, int songLimit = 20, int albumLimit = 20, int artistLimit = 20)
     {
