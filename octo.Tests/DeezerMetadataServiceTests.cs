@@ -440,4 +440,135 @@ public class DeezerMetadataServiceTests
         Assert.NotNull(second);
         Assert.Equal("Canciones Prohibidas", second!.AlbumTitle);
     }
+
+    // ---- Plain-query regression (Deezer dropped field-qualified search) ------
+    // Octo used to ask for artist:"X" track:"Y". Deezer now reads that as free text, so
+    // the literal words "artist" and "track" had to appear in the record and nothing ever
+    // matched: every external song lost its album, year and duration and fell back to a
+    // flat 180s, and every download was written with bare tags. These tests assert the
+    // query SHAPE, because the stub routes on path alone and stayed green throughout.
+
+    [Fact]
+    public async Task EnrichTrackAsync_SendsPlainTerms_WithoutFieldQualifiers()
+    {
+        var json = @"{""data"":[{""title"":""Reckoner"",""duration"":290,
+            ""album"":{""id"":1,""title"":""In Rainbows""},""artist"":{""name"":""Radiohead""}}]}";
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new() { ["/search"] = json }, capture: sent);
+
+        await svc.EnrichTrackAsync("Radiohead", "Reckoner", includeYear: false);
+
+        var query = Uri.UnescapeDataString(sent[0].RequestUri!.Query);
+        Assert.DoesNotContain("artist:", query);
+        Assert.DoesNotContain("track:", query);
+        Assert.Contains("Radiohead Reckoner", query);
+    }
+
+    [Fact]
+    public async Task EnrichTrackFullAsync_SendsPlainTerms_WithoutFieldQualifiers()
+    {
+        var json = @"{""data"":[{""title"":""Teardrop"",""duration"":330,""isrc"":""X"",
+            ""album"":{""id"":1,""title"":""Mezzanine""},""artist"":{""name"":""Massive Attack""}}]}";
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new() { ["/album/1"] = @"{""id"":1}", ["/search"] = json }, capture: sent);
+
+        await svc.EnrichTrackFullAsync("Massive Attack", "Teardrop");
+
+        var query = Uri.UnescapeDataString(sent[0].RequestUri!.Query);
+        Assert.DoesNotContain("artist:", query);
+        Assert.DoesNotContain("track:", query);
+    }
+
+    [Fact]
+    public async Task FindAlbumIdAsync_SendsPlainTerms_WithoutFieldQualifiers()
+    {
+        var json = @"{""data"":[{""id"":7,""title"":""Discovery"",""artist"":{""name"":""Daft Punk""}}]}";
+        var sent = new List<HttpRequestMessage>();
+        var svc = BuildService(new() { ["/search/album"] = json }, capture: sent);
+
+        await svc.FindAlbumIdAsync("Daft Punk", "Discovery");
+
+        var query = Uri.UnescapeDataString(sent[0].RequestUri!.Query);
+        Assert.DoesNotContain("artist:", query);
+        Assert.DoesNotContain("album:", query);
+    }
+
+    // ---- The guard that makes a plain query safe --------------------------------
+
+    [Fact]
+    public async Task EnrichTrackAsync_SkipsAHitByAnotherArtist()
+    {
+        // A plain query is fuzzy enough to put a cover at position 0. Taking it would
+        // attach the wrong album and length to the song as fact.
+        var json = @"{""data"":[
+            {""title"":""Creep"",""duration"":120,""album"":{""id"":9,""title"":""Karaoke Hits""},
+             ""artist"":{""name"":""Karaoke All Stars""}},
+            {""title"":""Creep"",""duration"":238,""album"":{""id"":1,""title"":""Pablo Honey""},
+             ""artist"":{""name"":""Radiohead""}}]}";
+        var svc = BuildService(new() { ["/search"] = json });
+
+        var meta = await svc.EnrichTrackAsync("Radiohead", "Creep", includeYear: false);
+
+        Assert.Equal("Pablo Honey", meta!.AlbumTitle);
+        Assert.Equal(238, meta.Duration);
+    }
+
+    [Fact]
+    public async Task EnrichTrackAsync_AcceptsADecoratedTitle()
+    {
+        // Deezer decorates titles; an exact compare would reject the right recording.
+        var json = @"{""data"":[{""title"":""Reckoner (Remastered 2016)"",""duration"":290,
+            ""album"":{""id"":1,""title"":""In Rainbows""},""artist"":{""name"":""Radiohead""}}]}";
+        var svc = BuildService(new() { ["/search"] = json });
+
+        var meta = await svc.EnrichTrackAsync("Radiohead", "Reckoner", includeYear: false);
+
+        Assert.Equal(290, meta!.Duration);
+    }
+
+    [Fact]
+    public async Task EnrichTrackAsync_RejectsAHitThatMatchesNothing()
+    {
+        // A hit stating neither the artist nor the title is not a match by default.
+        var json = @"{""data"":[{""duration"":111,""album"":{""id"":9,""title"":""Something Else""}}]}";
+        var svc = BuildService(new() { ["/search"] = json });
+
+        Assert.Null(await svc.EnrichTrackAsync("Radiohead", "Reckoner", includeYear: false));
+    }
+
+    // ---- A throttled year must not cost the whole track -------------------------
+
+    [Fact]
+    public async Task EnrichTrackAsync_ThrottledYear_KeepsAlbumAndDuration()
+    {
+        // The album detail carries only the year. Returning null when it was throttled
+        // threw away an album title and duration already in hand, which is what left a
+        // song with no length at all.
+        var track = @"{""data"":[{""title"":""Creep"",""duration"":238,
+            ""album"":{""id"":1,""title"":""Pablo Honey""},""artist"":{""name"":""Radiohead""}}]}";
+        var svc = BuildService(new() { ["/album/1"] = QuotaEnvelope, ["/search"] = track });
+
+        var meta = await svc.EnrichTrackAsync("Radiohead", "Creep", includeYear: true);
+
+        Assert.NotNull(meta);
+        Assert.Equal("Pablo Honey", meta!.AlbumTitle);
+        Assert.Equal(238, meta.Duration);
+        Assert.Null(meta.Year);
+    }
+
+    [Fact]
+    public async Task EnrichTrackAsync_ThrottledYear_IsNotCached()
+    {
+        // ...and because the year is still unknown, the answer must not be remembered,
+        // or one throttle blip becomes "this track has no year" for the life of the entry.
+        var svc = BuildSequencedService(new()
+        {
+            ("/album/1", new[] { QuotaEnvelope, @"{""id"":1,""release_date"":""1993-02-22""}" }),
+            ("/search", new[] { @"{""data"":[{""title"":""Creep"",""duration"":238,
+                ""album"":{""id"":1,""title"":""Pablo Honey""},""artist"":{""name"":""Radiohead""}}]}" }),
+        }, out _);
+
+        Assert.Null((await svc.EnrichTrackAsync("Radiohead", "Creep"))!.Year);
+        Assert.Equal(1993, (await svc.EnrichTrackAsync("Radiohead", "Creep"))!.Year);
+    }
 }

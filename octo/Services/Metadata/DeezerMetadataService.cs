@@ -152,12 +152,16 @@ public class DeezerMetadataService : IDisposable
         if (TryGetCached<TrackMeta?>(key, out var cached)) return cached;
 
         TrackMeta? meta = null;
+        // Set when the year alone could not be resolved. The rest of the record is still
+        // good and is returned; it just must not be remembered, or a throttle blip would
+        // be cached as "this track has no year" for the life of the entry.
+        var yearUnresolved = false;
         try
         {
-            var q = Uri.EscapeDataString($"artist:\"{artist}\" track:\"{title}\"");
-            using var r = await GetJsonAsync($"{Base}/search?q={q}&limit=1", ct, background);
+            var q = Uri.EscapeDataString(PlainQuery(artist, title));
+            using var r = await GetJsonAsync($"{Base}/search?q={q}&limit={MatchCandidates}", ct, background);
             if (r.Transient) return null;
-            if (FirstData(r.Doc) is JsonElement t)
+            if (BestMatch(r.Doc, artist, title) is JsonElement t)
             {
                 string? albTitle = null, cover = null, artName = null, artImg = null;
                 long albId = 0;
@@ -179,10 +183,11 @@ public class DeezerMetadataService : IDisposable
                 if (includeYear && albId > 0)
                 {
                     var (y, yearTransient) = await AlbumYearAsync(albId, ct);
-                    // A throttled year lookup would otherwise be cached as "this track
-                    // has no year", permanently, on an otherwise good result.
-                    if (yearTransient) return null;
+                    // Degrade to "no year", never to "no track". Returning null here threw
+                    // away an album title and duration the search had already fetched, so a
+                    // throttled year left the song with no length at all.
                     year = y;
+                    yearUnresolved = yearTransient;
                 }
                 meta = new TrackMeta(albTitle, cover, year, duration, artName, artImg);
             }
@@ -191,6 +196,9 @@ public class DeezerMetadataService : IDisposable
         {
             _logger.LogDebug("deezer enrich track '{A} - {T}' failed: {M}", artist, title, ex.Message);
         }
+
+        // Usable now, refetched next time, so the year gets another chance.
+        if (yearUnresolved) return meta;
 
         Put(key, meta, meta is null ? NegativeTtl : PositiveTtl);
         return meta;
@@ -208,12 +216,16 @@ public class DeezerMetadataService : IDisposable
         if (TryGetCached<FullTrackMeta?>(key, out var cached)) return cached;
 
         FullTrackMeta? meta = null;
+        // The album detail carries the year, genre and label. If only that call fails the
+        // track itself is still worth having, so it is returned uncached rather than lost:
+        // a tagger with an album title and cover art beats one with nothing.
+        var detailUnresolved = false;
         try
         {
-            var q = Uri.EscapeDataString($"artist:\"{artist}\" track:\"{title}\"");
-            using var r = await GetJsonAsync($"{Base}/search?q={q}&limit=1", ct);
+            var q = Uri.EscapeDataString(PlainQuery(artist, title));
+            using var r = await GetJsonAsync($"{Base}/search?q={q}&limit={MatchCandidates}", ct);
             if (r.Transient) return null;
-            if (FirstData(r.Doc) is JsonElement t)
+            if (BestMatch(r.Doc, artist, title) is JsonElement t)
             {
                 string? albTitle = null, cover = null, artName = null;
                 var isrc = Str(t, "isrc");
@@ -232,7 +244,7 @@ public class DeezerMetadataService : IDisposable
                 if (albId > 0)
                 {
                     using var ar = await GetJsonAsync($"{Base}/album/{albId}", ct);
-                    if (ar.Transient) return null;
+                    detailUnresolved = ar.Transient;
                     if (ar.Doc != null)
                     {
                         var root = ar.Doc.RootElement;
@@ -255,6 +267,9 @@ public class DeezerMetadataService : IDisposable
         {
             _logger.LogDebug("deezer full enrich '{A} - {T}' failed: {M}", artist, title, ex.Message);
         }
+
+        // Usable now, refetched next time, so the album detail gets another chance.
+        if (detailUnresolved) return meta;
 
         Put(key, meta, meta is null ? NegativeTtl : PositiveTtl);
         return meta;
@@ -346,11 +361,10 @@ public class DeezerMetadataService : IDisposable
         string? id = null;
         try
         {
-            var q = Uri.EscapeDataString(
-                string.IsNullOrWhiteSpace(artist) ? $"album:\"{album}\"" : $"artist:\"{artist}\" album:\"{album}\"");
-            using var r = await GetJsonAsync($"{Base}/search/album?q={q}&limit=1", ct);
+            var q = Uri.EscapeDataString(PlainQuery(artist, album));
+            using var r = await GetJsonAsync($"{Base}/search/album?q={q}&limit={MatchCandidates}", ct);
             if (r.Transient) return null;
-            if (FirstData(r.Doc) is JsonElement a
+            if (BestMatch(r.Doc, artist, album) is JsonElement a
                 && a.TryGetProperty("id", out var aid) && aid.ValueKind == JsonValueKind.Number)
             {
                 id = aid.GetInt64().ToString();
@@ -546,6 +560,72 @@ public class DeezerMetadataService : IDisposable
             _logger.LogDebug("deezer request {Url} failed: {M}", url, ex.Message);
             return new DeezerResponse { Transient = true };
         }
+    }
+
+    /// <summary>
+    /// Deezer no longer supports field-qualified search on the track endpoints. A query
+    /// like artist:"X" track:"Y" is now read as free text, so the literal words "artist"
+    /// and "track" have to appear in the record and nothing ever matches. Plain terms are
+    /// the only shape that still works.
+    /// </summary>
+    private static string PlainQuery(params string?[] parts) =>
+        string.Join(' ', parts.Where(p => !string.IsNullOrWhiteSpace(p)).Select(p => p!.Trim()));
+
+    /// <summary>How many hits to weigh before giving up. A plain query is fuzzier than a
+    /// qualified one was, so it puts covers, karaoke and live takes next to the real
+    /// recording and the first row is not reliably the right one.</summary>
+    private const int MatchCandidates = 5;
+
+    /// <summary>Letters and digits only, so punctuation, case and spacing cannot decide
+    /// a match.</summary>
+    private static string MatchKey(string? value) =>
+        new((value ?? string.Empty).Normalize().ToLowerInvariant().Where(char.IsLetterOrDigit).ToArray());
+
+    /// <summary>What one field of a hit says about the request.</summary>
+    private enum FieldVerdict { Match, Absent, Mismatch }
+
+    /// <summary>
+    /// Compare one field. Containment rather than equality, because Deezer decorates
+    /// titles ("Reckoner (Remastered)") and credits features in the artist field; an exact
+    /// compare rejects the correct recording far more often than it rejects a wrong one.
+    ///
+    /// A field either side left empty is <see cref="FieldVerdict.Absent"/>, never a
+    /// mismatch. Absent evidence is not counter-evidence, and treating a field Deezer
+    /// simply did not send as a contradiction would throw away good hits the moment the
+    /// payload shape changes.
+    /// </summary>
+    private static FieldVerdict Compare(string want, string got)
+    {
+        if (want.Length == 0 || got.Length == 0) return FieldVerdict.Absent;
+        return got.Contains(want) || want.Contains(got) ? FieldVerdict.Match : FieldVerdict.Mismatch;
+    }
+
+    /// <summary>
+    /// The first hit that positively matches on artist or title and contradicts on
+    /// neither. This is the guard that makes a plain query safe to use in place of the
+    /// qualified one: without it a near-miss at position 0 would be attached to the song
+    /// as fact. Requiring at least one positive match is what stops a hit that states
+    /// nothing at all from matching everything.
+    /// </summary>
+    private static JsonElement? BestMatch(JsonDocument? doc, string? artist, string? title)
+    {
+        if (doc is null) return null;
+        if (!doc.RootElement.TryGetProperty("data", out var data)
+            || data.ValueKind != JsonValueKind.Array) return null;
+
+        var wantArtist = MatchKey(artist);
+        var wantTitle = MatchKey(title);
+
+        foreach (var hit in data.EnumerateArray())
+        {
+            var titleVerdict = Compare(wantTitle, MatchKey(Str(hit, "title")));
+            var artistVerdict = Compare(wantArtist,
+                MatchKey(hit.TryGetProperty("artist", out var a) ? Str(a, "name") : null));
+
+            if (titleVerdict == FieldVerdict.Mismatch || artistVerdict == FieldVerdict.Mismatch) continue;
+            if (titleVerdict == FieldVerdict.Match || artistVerdict == FieldVerdict.Match) return hit;
+        }
+        return null;
     }
 
     private static JsonElement? FirstData(JsonDocument? doc)
