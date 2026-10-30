@@ -45,12 +45,14 @@ public abstract class BaseDownloadService : IDownloadService
     protected string DownloadPath => _navIdentity.EffectiveDownloadPath(_configuredDownloadPath);
     protected readonly string CachePath;
     
-    // Concurrent because the album walk reads this WITHOUT holding DownloadLock while a
-    // request thread can be writing to it under the lock. Every write used to be lock
-    // guarded and the only unguarded reader was dead code; enabling album downloads makes
-    // that pattern live, and concurrent read+write on Dictionary is undefined.
+    // Concurrent because the album walk reads this while request threads write to it;
+    // concurrent read+write on Dictionary is undefined.
     protected readonly ConcurrentDictionary<string, DownloadInfo> ActiveDownloads = new();
-    protected readonly SemaphoreSlim DownloadLock = new(1, 1);
+    /// <summary>
+    /// Per-song dedupe plus a bounded number of concurrent downloads. Replaces the old
+    /// global one-at-a-time lock, which was held across metadata fetch, transfer and tagging.
+    /// </summary>
+    protected readonly DownloadCoordinator Downloads;
     
     /// <summary>
     /// Lazy-loaded PlaylistSyncService to avoid circular dependency
@@ -93,6 +95,8 @@ public abstract class BaseDownloadService : IDownloadService
         Notifications = notifications;
         _serviceProvider = serviceProvider;
         Logger = logger;
+
+        Downloads = new DownloadCoordinator(subsonicSettings.CurrentValue.MaxConcurrentDownloads);
 
         _configuredDownloadPath = configuration["Library:DownloadPath"] ?? "./downloads";
         CachePath = PathHelper.GetCachePath();
@@ -347,14 +351,18 @@ public abstract class BaseDownloadService : IDownloadService
         // fetched-songs log, so they skip notifications for the same reason.
         var silence = suppressNotify || isCache;
         
-        // Acquire lock BEFORE checking existence to prevent race conditions with concurrent requests
-        await DownloadLock.WaitAsync(cancellationToken);
-        // The in-progress branch below releases early so it can wait without holding the
-        // lock, and the finally would then release a second time. On a SemaphoreSlim(1,1)
-        // that either throws from inside a finally, discarding a successful return, or
-        // worse succeeds and lets two callers hold a mutex that permits one.
-        var lockHeld = true;
+        // Same song concurrently: one shared download. Different songs run in parallel up
+        // to the configured bound. The work itself never holds a global lock.
+        return await Downloads.RunAsync(songId, ct => DownloadSongCoreAsync(
+            externalProvider, externalId, songId, isCache, silence, triggerAlbumDownload,
+            sourceOverride, ct), cancellationToken);
+    }
 
+    private async Task<string> DownloadSongCoreAsync(
+        string externalProvider, string externalId, string songId, bool isCache, bool silence,
+        bool triggerAlbumDownload, DownloadSource? sourceOverride,
+        CancellationToken cancellationToken)
+    {
         try
         {
             // Check if already downloaded (skip for cache mode as we want to check cache folder)
@@ -378,27 +386,6 @@ public abstract class BaseDownloadService : IDownloadService
                     IOFile.SetLastAccessTime(cachedPath, DateTime.UtcNow);
                     return cachedPath;
                 }
-            }
-
-            // Check if download in progress
-            if (ActiveDownloads.TryGetValue(songId, out var activeDownload) && activeDownload.Status == DownloadStatus.InProgress)
-            {
-                Logger.LogInformation("Download already in progress for {SongId}, waiting...", songId);
-                // Release lock while waiting
-                DownloadLock.Release();
-                lockHeld = false;
-
-                while (ActiveDownloads.TryGetValue(songId, out activeDownload) && activeDownload.Status == DownloadStatus.InProgress)
-                {
-                    await Task.Delay(500, cancellationToken);
-                }
-                
-                if (activeDownload?.Status == DownloadStatus.Completed && activeDownload.LocalPath != null)
-                {
-                    return activeDownload.LocalPath;
-                }
-                
-                throw new Exception(activeDownload?.ErrorMessage ?? "Download failed");
             }
 
             // Get metadata
@@ -545,10 +532,6 @@ public abstract class BaseDownloadService : IDownloadService
             }
             Logger.LogError(ex, "Download failed for {SongId}", songId);
             throw;
-        }
-        finally
-        {
-            if (lockHeld) DownloadLock.Release();
         }
     }
 

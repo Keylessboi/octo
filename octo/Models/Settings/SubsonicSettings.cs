@@ -182,6 +182,12 @@ public class SubsonicSettings
     /// Values: "Track" or "Album"
     /// </summary>
     public DownloadMode DownloadMode { get; set; } = DownloadMode.Track;
+
+    /// <summary>
+    /// How many downloads may run at once (minimum 1). Read when the download service is
+    /// built, so changing it needs a restart.
+    /// </summary>
+    public int MaxConcurrentDownloads { get; set; } = 3;
     
     /// <summary>
     /// Legacy storage mode for direct-download jobs (default: Permanent).
