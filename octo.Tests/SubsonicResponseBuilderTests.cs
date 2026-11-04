@@ -442,4 +442,24 @@ public class SubsonicResponseBuilderTests
         Assert.NotNull(albumElement.Attribute("created"));
         Assert.True(DateTime.TryParse(albumElement.Attribute("created")!.Value, out _));
     }
+
+    [Fact]
+    public void ConvertSongToJson_ExternalSong_IsMarkedExternal()
+    {
+        var song = new Song { Id = "abc", Title = "Bobby", Artist = "Phoebe Bridgers", Album = "Lost Weekend", IsLocal = false };
+
+        var fields = _builder.ConvertSongToJson(song);
+
+        Assert.Equal(true, fields["isExternal"]);
+    }
+
+    [Fact]
+    public void ConvertSongToJson_LocalSong_IsNotMarkedExternal()
+    {
+        var song = new Song { Id = "abc", Title = "Bobby", Artist = "Phoebe Bridgers", Album = "Lost Weekend", IsLocal = true };
+
+        var fields = _builder.ConvertSongToJson(song);
+
+        Assert.Equal(false, fields["isExternal"]);
+    }
 }
