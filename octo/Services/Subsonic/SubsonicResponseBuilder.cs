@@ -481,7 +481,7 @@ public class SubsonicResponseBuilder
             ["moods"] = Array.Empty<object>(),
             ["replayGain"] = new Dictionary<string, object>(),
             ["sortName"] = (song.Title ?? "").ToLowerInvariant(),
-            ["isExternal"] = false
+            ["isExternal"] = !song.IsLocal
         };
 
         if (song.Year is int knownYear) fields["year"] = knownYear;
